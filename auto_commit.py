@@ -23,25 +23,51 @@ def create_random_file():
     
     return filename
 
+def _git_env():
+    """Environment for non-interactive git (launchd has no TTY)."""
+    env = os.environ.copy()
+    env['GIT_TERMINAL_PROMPT'] = '0'
+    env.setdefault('HOME', os.path.expanduser('~'))
+    # Prefer Homebrew tools (git, gh, python) when launched from launchd
+    homebrew_bin = '/opt/homebrew/bin'
+    path = env.get('PATH', '')
+    if homebrew_bin not in path.split(':'):
+        env['PATH'] = f"{homebrew_bin}:{path}" if path else homebrew_bin
+    return env
+
+
 def git_commit_and_push(filename):
     """Commit and push the file to GitHub."""
     try:
-        # Set up environment for git commands
-        env = os.environ.copy()
-        env['GIT_TERMINAL_PROMPT'] = '0'  # Disable credential prompts
-        
-        # Add the file
-        result = subprocess.run(['git', 'add', filename], check=True, capture_output=True, text=True, env=env)
-        
-        # Commit with timestamp
+        env = _git_env()
+
+        # Add only this file so leftover staged files are not bundled in
+        result = subprocess.run(
+            ['git', 'add', '--', filename],
+            check=True, capture_output=True, text=True, env=env,
+        )
+
+        # launchd has no TTY for pinentry, so skip GPG even if commit.gpgsign=true
         commit_message = f"Automated commit: {filename.replace('random_content_', '').replace('.txt', '')}"
-        result = subprocess.run(['git', 'commit', '-m', commit_message], check=True, capture_output=True, text=True, env=env)
+        result = subprocess.run(
+            ['git', 'commit', '--no-gpg-sign', '-m', commit_message, '--', filename],
+            check=True, capture_output=True, text=True, env=env,
+        )
         print(result.stdout)
-        
-        # Push to remote
-        result = subprocess.run(['git', 'push'], check=True, capture_output=True, text=True, env=env)
+
+        # Stored HTTPS passwords fail (GitHub requires a token). Use gh for this
+        # command only — do not rewrite git config.
+        result = subprocess.run(
+            [
+                'git',
+                '-c', 'credential.helper=',
+                '-c', 'credential.helper=!/opt/homebrew/bin/gh auth git-credential',
+                'push',
+            ],
+            check=True, capture_output=True, text=True, env=env,
+        )
         print(result.stdout)
-        
+
         print(f"Successfully committed and pushed {filename}")
         return True
     except subprocess.CalledProcessError as e:
